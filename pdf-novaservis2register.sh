@@ -6,6 +6,9 @@
 #debug
 #ECHO=echo
 
+MV=/bin/mv
+QPDF=/usr/bin/qpdf
+
 export LANG=en_US.UTF-8
 [ $LANG = 'en_US.UTF-8' ] || { echo "Error: LANG must be en_US.UTF-8"; exit 255; }
 
@@ -13,7 +16,8 @@ export LANG=en_US.UTF-8
 # set this variables!    #
 ##########################
 
-if [ $HOSTNAME = 'scherbova.arc.world' -o $HOSTNAME = 'scherbova' ] 
+#if [ $HOSTNAME = 'scherbova.arc.world' -o $HOSTNAME = 'scherbova' ] 
+if [[ $HOSTNAME == *scherbova* ]] 
 then
    BIN=/smb/system/Scripts/PP-from-mail/devel
    #eval $(grep MAILDIR $HOME/.procmailrc)
@@ -24,7 +28,7 @@ else
 fi
 RIP2HTML=$BIN/rip-html.awk
 #MK_REGISTER=$BIN/mk-register.awk
-MK_REGISTER=$BIN/mk-register-neoprom.awk
+MK_REGISTER=$BIN/mk-register-novaservis.awk
 
 DST_MAIL=pp-element@kipspb.ru 
 #DST_MAIL=it-events@arc.world 
@@ -44,12 +48,14 @@ PDF_DIR=$MAILDIR/pdf
 PDF_ORG_DIR=$PDF_DIR/01-origin
 PDF_WRK_DIR=$PDF_DIR/02-html-txt
 PDF_OUT_DIR=$PDF_DIR/03-out
+PDF_JOINED_DIR=$PDF_DIR/97-joined
 PDF_FAILED_DIR=$PDF_DIR/98-failed
 PDF_ARCH_DIR=$PDF_DIR/99-archive
 [ -d $PDF_DIR ] || mkdir -p $PDF_DIR 
 [ -d $PDF_ORG_DIR ] || mkdir -p $PDF_ORG_DIR 
 [ -d $PDF_WRK_DIR ] || mkdir -p $PDF_WRK_DIR 
 [ -d $PDF_OUT_DIR ] || mkdir -p $PDF_OUT_DIR 
+[ -d $PDF_JOINED_DIR ] || mkdir -p $PDF_JOINED_DIR 
 [ -d $PDF_FAILED_DIR ] || mkdir -p $PDF_FAILED_DIR 
 [ -d $PDF_ARCH_DIR ] || mkdir -p $PDF_ARCH_DIR 
 
@@ -77,14 +83,34 @@ XPS_XLSX_OUT=$XPS_OUT_DIR/PP-neoprom-$DT.xlsx
 
 LOG=$MAILDIR/`namename $0`-$DT.log
 exec 1>$LOG 2>&1
-set -vx # DEBUG only
+#set -vx # DEBUG only
 ############# PDF #############
+
+# pre-1. pdf to html, html to txt
+for f in `ls -1 $PDF_ORG_FILES 2>/dev/null`
+do
+   bname=`namename $f`
+   if [[ $bname == *-* ]]
+   then
+     RANGE=`namename $bname` 
+     N_START=${RANGE%%-*}
+     N_FINISH=$($QPDF --show-npages $f)
+     set -vx
+     for i in $(seq 1 $N_FINISH); do 
+         PAGE_I=$(( $N_START + $i - 1 ))
+         $QPDF $f --pages $f $i -- $PDF_ORG_DIR/out$PAGE_I.pdf; 
+     done
+     set +vx
+     $MV $f $PDF_JOINED_DIR
+   fi 
+done
 
 # 1. pdf to html, html to txt
 for f in `ls -1 $PDF_ORG_FILES 2>/dev/null`
 do
    [ -r $f ] || { logmsg ERROR "$f doesn't exist or I can't read it"; continue; }
    bname=`namename $f`
+   #2015 only !!! [[ $bname == *-* ]] && { logmsg WARNING "skip file $f with RANGE of docs"; continue;}
    PDF_NAME=$f
    PP_NAME=$bname
 
@@ -97,7 +123,7 @@ do
    logmsg INFO "Try to rip $HTML_NAME to $PDF_OUT"
    $ECHO awk -f $RIP2HTML $PDF_WRK_DIR/$HTML_NAME > $PDF_WRK_DIR/$PDF_OUT
    rc_rip=$?
-   [ $rc_rip -eq 0 ] && mv $f $PDF_ARCH_DIR || logmsg $rc_rip "Error while rip $HTML_NAME"
+   [ $rc_rip -eq 0 ] && $MV $f $PDF_ARCH_DIR || logmsg $rc_rip "Error while rip $HTML_NAME"
 done
 
 # 2. make register for nova-service
@@ -115,7 +141,7 @@ then
    logmsg INFO "Try to sort `basename $PDF_CSV_OUT`"
    sort -n -t";" -k2 $PDF_CSV_OUT > /tmp/csv.sorted
    logmsg $? "Sort $PDF_CSV_OUT completed"
-   mv /tmp/csv.sorted $PDF_CSV_OUT
+   $MV /tmp/csv.sorted $PDF_CSV_OUT
    logmsg INFO "Try to merge `basename $PDF_CSV_OUT` and `basename $XLSX_TEMPL` to $PDF_XLSX_OUT"
    $ECHO csv2odf -c \; --input=$PDF_CSV_OUT --template=$XLSX_TEMPL --output=$PDF_XLSX_OUT
    rc_csv=$?
@@ -132,15 +158,17 @@ then
 fi
 
 # 4. save failed 
-# doesn't work test -f with more than onw file 
-# [ -f  $PDF_ORG_FILES ] && mv $PDF_ORG_FILES $PDF_FAILED_DIR 
-mv $PDF_ORG_FILES $PDF_FAILED_DIR 
+set -f
+[ -f  $PDF_ORG_FILES ] && $MV $PDF_ORG_FILES $PDF_FAILED_DIR 
+set +f
+#$MV $PDF_ORG_FILES $PDF_FAILED_DIR 
 
 ############# XPS #############
 
 pushd $XPS_WRK_DIR
 for x in `ls $XPS_ORG_FILES 2>/dev/null`
 do
+   XPS_EXIST='YES'
    xpp=`namename $x`
    mkdir $xpp
    pushd $xpp
@@ -157,18 +185,20 @@ do
    [ $rc_neorip -eq 0 ] || { logmsg $rc_neorip "Error while rip $fpage"; continue; }
    $ECHO awk -f $MK_REGISTER_FPAGE $xpp-$DT.txt >> $XPS_CSV_OUT
    rc_mkreg=$?
-   [ $rc_mkreg -eq 0 ] && mv $x $XPS_ARCH_DIR || logmsg $rc_mkreg "Error while add $xpp-$DT.txt to register"
+   [ $rc_mkreg -eq 0 ] && $MV $x $XPS_ARCH_DIR || logmsg $rc_mkreg "Error while add $xpp-$DT.txt to register"
 done
 popd
 
-# merge CSV with template 
-logmsg INFO "Try to merge `basename $XPS_CSV_OUT` and `basename $XLSX_TEMPL` to $XPS_XLSX_OUT"
-$ECHO csv2odf -c \; --input=$XPS_CSV_OUT --template=$XLSX_TEMPL --output=$XPS_XLSX_OUT
-rc_csv=$?
-[ $rc_csv -eq 0 ] || logmsg $rc_csv "Error while merge $XPS_CSV_OUT and $XLSX_TEMPL to $XPS_XLSX_OUT"
-#$ECHO rm -rf $XPS_WRK_DIR/*
-#$ECHO rm -f $XPS_CSV_OUT
-
+if [ +$XPS_EXIST == 'YES' ]
+then
+    # merge CSV with template 
+    logmsg INFO "Try to merge `basename $XPS_CSV_OUT` and `basename $XLSX_TEMPL` to $XPS_XLSX_OUT"
+    $ECHO csv2odf -c \; --input=$XPS_CSV_OUT --template=$XLSX_TEMPL --output=$XPS_XLSX_OUT
+    rc_csv=$?
+    [ $rc_csv -eq 0 ] || logmsg $rc_csv "Error while merge $XPS_CSV_OUT and $XLSX_TEMPL to $XPS_XLSX_OUT"
+    #$ECHO rm -rf $XPS_WRK_DIR/*
+    #$ECHO rm -f $XPS_CSV_OUT
+fi
 
 
 logmsg INFO "FINISH"
